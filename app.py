@@ -1,18 +1,18 @@
 # Import necessary libraries
+from pickle import load
+from numpy import argmax
 from flask import Flask, render_template, request
-import pandas as pd
-import numpy as np
-import tensorflow as tf
+from keras.preprocessing.sequence import pad_sequences
+from keras.applications.vgg16 import VGG16
 from keras.preprocessing.image import load_img
 from keras.preprocessing.image import img_to_array
+from keras.applications.vgg16 import preprocess_input
+from keras.models import Model
 from keras.models import load_model
 import os
 
 # Create flask instance
 app = Flask(__name__)
-
-# Set Max size of file as 10MB.
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
 
 # Allow files with extension png, jpg and jpeg
 ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg']
@@ -28,18 +28,18 @@ def allowed_file(filename):
 # Function to load and prepare the image in right shape
 
 
-def read_image(filename):
-    # Load the image
-    img = load_img(filename, color_mode="grayscale", target_size=(28, 28))
-    # Convert the image to array
-    img = img_to_array(img)
-    # Reshape the image into a sample of 1 channel
-    img = img.reshape(1, 28, 28, 1)
-    # Prepare it as pixel data
-    img = img.astype('float32')
-    img = img / 255.0
-    # print(img)
-    return img
+# def read_image(filename):
+#     # Load the image
+#     img = load_img(filename, color_mode="grayscale", target_size=(28, 28))
+#     # Convert the image to array
+#     img = img_to_array(img)
+#     # Reshape the image into a sample of 1 channel
+#     img = img.reshape(1, 28, 28, 1)
+#     # Prepare it as pixel data
+#     img = img.astype('float32')
+#     img = img / 255.0
+#     # print(img)
+#     return img
 
 
 @app.route("/", methods=['GET', 'POST'])
@@ -47,48 +47,99 @@ def home():
 
     return render_template('home.html')
 
+# generate a description for an image
+
+# map an integer to a word
+
+
+def word_for_id(integer, tokenizer):
+    for word, index in tokenizer.word_index.items():
+        if index == integer:
+            return word
+    return None
+
+
+def generate_desc(model, tokenizer, photo, max_length):
+    # seed the generation process
+    in_text = 'startseq'
+    # iterate over the whole length of the sequence
+    for i in range(max_length):
+        # integer encode input sequence
+        sequence = tokenizer.texts_to_sequences([in_text])[0]
+        # pad input
+        sequence = pad_sequences([sequence], maxlen=max_length)
+        # predict next word
+        yhat = model.predict([photo, sequence], verbose=0)
+        # convert probability to integer
+        yhat = argmax(yhat)
+        # map integer to word
+        word = word_for_id(yhat, tokenizer)
+        # stop if we cannot map the word
+        if word is None:
+            break
+        # append as input for generating the next word
+        in_text += ' ' + word
+        # stop if we predict the end of the sequence
+        if word == 'endseq':
+            break
+    return in_text
+
+
+def extract_features(filename):
+    # load the model
+    model = VGG16()
+    # re-structure the model
+    model.layers.pop()
+    model = Model(inputs=model.inputs, outputs=model.layers[-1].output)
+    # load the photo
+    image = load_img(filename, target_size=(224, 224))
+    # convert the image pixels to a numpy array
+    image = img_to_array(image)
+    # reshape data for the model
+    image = image.reshape((1, image.shape[0], image.shape[1], image.shape[2]))
+    # print(image)
+    # prepare the image for the VGG model
+    image = preprocess_input(image)
+    # get features
+    feature = model.predict(image, verbose=0)
+    return feature
+
 
 @app.route("/predict", methods=['POST', 'GET'])
 def predict():
     if request.method == 'POST':
         file = request.files['file']
-        print(file)
         try:
             if file and allowed_file(file.filename):
                 filename = file.filename
                 file_path = os.path.join('static/images', filename)
                 file.save(file_path)
-                img = read_image(file_path)
-                # Predict the class of an image
-                # print(img)
+                # print(file_path)
 
-                # with graph.as_default():
-                model = load_model('apparel_classifier_model_new.h5')
-                class_prediction = np.argmax(model.predict(img)[0])
-                print(class_prediction)
+                # load the tokenizer
+                tokenizer = load(open('tokenizer.pkl', 'rb'))
+                # pre-define the max sequence length (from training)
+                max_length = 34
+                # load the model
+                model = load_model('model_19.h5')
+                # print(model)
+                # # load and prepare the photograph
+                photo = extract_features(file_path)
+                # print(photo)
+                # generate description
+                description = generate_desc(
+                    model, tokenizer, photo, max_length)
+                print(description)
 
-                # Map apparel category with the numerical class
-                if class_prediction == 0:
-                    product = "T-shirt/top"
-                elif class_prediction == 1:
-                    product = "Trouser"
-                elif class_prediction == 2:
-                    product = "Pullover"
-                elif class_prediction == 3:
-                    product = "Dress"
-                elif class_prediction == 4:
-                    product = "Coat"
-                elif class_prediction == 5:
-                    product = "Sandal"
-                elif class_prediction == 6:
-                    product = "Shirt"
-                elif class_prediction == 7:
-                    product = "Sneaker"
-                elif class_prediction == 8:
-                    product = "Bag"
-                else:
-                    product = "Ankle boot"
-                return render_template('predict.html', product=product, user_image=file_path)
+                # Remove startseq and endseq
+                query = description
+                stopwords = ['startseq', 'endseq']
+                querywords = query.split()
+
+                resultwords = [
+                    word for word in querywords if word.lower() not in stopwords]
+                result = ' '.join(resultwords)
+                return render_template('predict.html', result=result, user_image=file_path)
         except Exception as e:
             return "Unable to read the file. Please check if the file extension is correct."
 
